@@ -4,11 +4,19 @@
 
 %% File Setup with Specific Path
 % Set the exact file path and check if it exists
-filepath = 'C:\Users\wyse\Enantios-Thermal-Control\Test measurements\2ml tol. M, water, InnosuisseV3\10.01.25,09.51,50.0_5.0_1.0_15.xlsx';
+% Add all source directories to the MATLAB path
+addpath(genpath('../src/'));
 
-% Check if the file exists
-if ~exist(filepath, 'file')
-    error('File not found: %s\nPlease ensure the file exists at the specified path.', filepath);
+% Define path to data folder
+dataDir = '../data/raw/';
+
+% Define path to specific file
+filepath = fullfile(dataDir, '10.01.25,09.51,50.0_5.0_1.0_15.xlsx');
+
+% Create output directory if it doesn't exist
+outputDir = '../data/processed/';
+if ~exist(outputDir, 'dir')
+    mkdir(outputDir);
 end
 
 % Extract filename from the path
@@ -28,7 +36,7 @@ figure('Name', 'Temperature Offsets vs Target Temperatures', 'Position', [100 10
 % Read measurement data and settings
 try
     fprintf('Reading measurement data...\n');
-    data = readMeas(filename, filepath);
+    data = readMeasurement(filename, filepath);
     settings = readSettings(filename);
     fprintf('Successfully read data with dimensions: %d x %d\n', size(data, 1), size(data, 2));
 catch ME
@@ -58,7 +66,7 @@ for step_idx = 1:length(steps)
     fprintf('\nProcessing step %d of %d: %s\n', step_idx, length(steps), step_name);
     
     % Extract offset information and ambient temperature
-    [table, offset, t_stable, ambient_temp] = extractOffsetWithAmbient(step_data, step_name);
+    [table, offset, t_stable, ambient_temp] = extractOffset(step_data, step_name);
     
     % Store results
     target_temp = step_data(1, 4);  % Target temperature is in column 4
@@ -332,7 +340,7 @@ for i = 1:length(desired_temps)
         desired_temp = desired_temps(i);
         ambient_temp = ambient_temps(j);
         
-        corrected_target = calculateCorrectedTarget(desired_temp, ambient_temp, model_coeffs, ref_temp);
+        corrected_target = calculateTarget(desired_temp, ambient_temp, model_coeffs, ref_temp);
         
         fprintf('      %.1f°C      |     %.1f°C    |      %.2f°C\n', ...
                 desired_temp, ambient_temp, corrected_target);
