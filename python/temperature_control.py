@@ -611,6 +611,57 @@ def main():
     
     args = parser.parse_args()
     
+    # Interactive port selection if not specified in command line
+    if not args.tec_port or not args.arduino_port:
+        try:
+            import serial.tools.list_ports
+            ports = list(serial.tools.list_ports.comports())
+            
+            print("\nDetected serial ports:")
+            for i, p in enumerate(ports):
+                print(f"  {i+1}: {p.device} - {p.description}")
+            
+            # TEC Controller port selection
+            if not args.tec_port:
+                print("\nTEC Controller port selection:")
+                tec_input = input("Enter the number or name of the TEC controller port: ")
+                try:
+                    tec_idx = int(tec_input) - 1
+                    if 0 <= tec_idx < len(ports):
+                        args.tec_port = ports[tec_idx].device
+                        print(f"Selected TEC port: {args.tec_port}")
+                    else:
+                        print(f"Invalid selection: {tec_input}, will try to use as direct port name")
+                        args.tec_port = tec_input
+                except ValueError:
+                    # Not a number, use as direct port name
+                    args.tec_port = tec_input
+                    print(f"Using TEC port: {args.tec_port}")
+            
+            # Arduino port selection
+            if not args.arduino_port:
+                print("\nArduino port selection:")
+                arduino_input = input("Enter the number or name of the Arduino port: ")
+                try:
+                    arduino_idx = int(arduino_input) - 1
+                    if 0 <= arduino_idx < len(ports):
+                        args.arduino_port = ports[arduino_idx].device
+                        print(f"Selected Arduino port: {args.arduino_port}")
+                    else:
+                        print(f"Invalid selection: {arduino_input}, will try to use as direct port name")
+                        args.arduino_port = arduino_input
+                except ValueError:
+                    # Not a number, use as direct port name
+                    args.arduino_port = arduino_input
+                    print(f"Using Arduino port: {args.arduino_port}")
+                
+        except ImportError:
+            logging.error("pyserial not installed. Please install with 'pip install pyserial'")
+            return 1
+        except Exception as e:
+            logging.error(f"Error detecting ports: {e}")
+            return 1
+    
     # Create temperature control system
     temp_control = TemperatureControl(tec_port=args.tec_port, arduino_port=args.arduino_port)
     
