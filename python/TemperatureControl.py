@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-Simple Temperature Control System
-A lightweight Python alternative to the LabView script for temperature control
+Enhanced Temperature Control System
+
+An improved Python script for temperature control that implements
+the offset correction formula from the MATLAB model.
 """
 
 import serial
@@ -13,6 +15,7 @@ import threading
 import logging
 import argparse
 import sys
+import math
 
 # Configure logging
 logging.basicConfig(
@@ -25,32 +28,33 @@ logging.basicConfig(
 )
 
 class TECController:
-    """Interface for the Meerstetter TEC Controller using pyMeCom."""
+    """Interface for the Meerstetter TEC Controller."""
     
     def __init__(self, port=None, address=1):
         """Initialize connection to TEC controller."""
-        try:
-            # Try to import pyMeCom - if not installed, give instructions
-            import mecom
-            self.mecom_available = True
-        except ImportError:
-            logging.error("pyMeCom library not found. Please install it using 'pip install pyMeCom'")
-            logging.error("More info: https://github.com/makelangelo/pyMeCom")
-            self.mecom_available = False
-        
         self.port = port
         self.address = address
         self.device = None
         self.connected = False
+        
+        # Try to import the MeCom library
+        try:
+            # Import directly from mecom folder
+            sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            from mecom.mecom import MeCom
+            self.MeCom = MeCom
+            logging.info("Successfully imported MeCom library")
+            self.mecom_available = True
+        except ImportError:
+            logging.error("MeCom library not found. Please ensure it's in the Python path.")
+            self.mecom_available = False
     
     def connect(self):
-        """Establish connection to the TEC controller using pyMeCom."""
+        """Establish connection to the TEC controller."""
         if not self.mecom_available:
-            logging.error("Cannot connect: pyMeCom library not available")
+            logging.error("Cannot connect: MeCom library not available")
             return False
             
-        from mecom import MeCom, ResponseException, WrongChecksum
-        
         if self.port is None:
             # Try to find the TEC controller on available ports
             import serial.tools.list_ports
@@ -67,21 +71,16 @@ class TECController:
             return False
         
         try:
-            # Connect using pyMeCom library
-            self.device = MeCom(self.port, address=self.address)
+            # Connect using MeCom library
+            self.device = self.MeCom(serialport=self.port)
             
-            # Test connection by reading device status
-            device_status = self.device.get_device_status()
-            logging.info(f"Connected to TEC Controller on {self.port}")
-            logging.info(f"Device status: {device_status}")
+            # Get device address
+            self.address = self.device.identify()
+            logging.info(f"Connected to TEC Controller on {self.port} with address {self.address}")
             
-            # Get device info for logging
-            try:
-                device_type = self.device.get_parameter(1)  # Device Type
-                serial_number = self.device.get_parameter(3)  # Serial Number
-                logging.info(f"Device Type: {device_type}, Serial Number: {serial_number}")
-            except (ResponseException, WrongChecksum, ValueError) as e:
-                logging.warning(f"Could not retrieve device info: {e}")
+            # Check device status
+            status = self.get_device_status()
+            logging.info(f"Device status: {status}")
             
             self.connected = True
             return True
@@ -94,12 +93,24 @@ class TECController:
         """Close the connection."""
         if self.connected and self.device:
             try:
-                self.device.close()
+                self.device.stop()
                 logging.info("Disconnected from TEC Controller")
             except Exception as e:
                 logging.error(f"Error disconnecting from TEC Controller: {e}")
             finally:
                 self.connected = False
+    
+    def get_device_status(self):
+        """Get the device status."""
+        if not self.connected:
+            logging.error("Not connected to TEC Controller")
+            return None
+            
+        try:
+            return self.device.status(address=self.address)
+        except Exception as e:
+            logging.error(f"Error getting device status: {e}")
+            return None
     
     def get_object_temperature(self):
         """Get the object (holder) temperature."""
@@ -108,8 +119,7 @@ class TECController:
             return None
             
         try:
-            # Parameter 1000 is Object Temperature
-            return self.device.get_parameter(1000)
+            return self.device.get_parameter(parameter_name="Object Temperature", address=self.address)
         except Exception as e:
             logging.error(f"Error getting object temperature: {e}")
             return None
@@ -121,8 +131,7 @@ class TECController:
             return None
             
         try:
-            # Parameter 1010 is Target Object Temperature
-            return self.device.get_parameter(1010)
+            return self.device.get_parameter(parameter_id=3000, address=self.address)
         except Exception as e:
             logging.error(f"Error getting target temperature: {e}")
             return None
@@ -134,10 +143,10 @@ class TECController:
             return False
             
         try:
-            # Parameter 1010 is Target Object Temperature
-            self.device.set_parameter(1010, temperature)
-            logging.info(f"Set target temperature to {temperature:.2f}°C")
-            return True
+            success = self.device.set_parameter(value=temperature, parameter_id=3000, address=self.address)
+            if success:
+                logging.info(f"Set target temperature to {temperature:.2f}°C")
+            return success
         except Exception as e:
             logging.error(f"Error setting target temperature: {e}")
             return False
@@ -149,8 +158,7 @@ class TECController:
             return None
             
         try:
-            # Parameter 1001 is Sink Temperature
-            return self.device.get_parameter(1001)
+            return self.device.get_parameter(parameter_id=1001, address=self.address)
         except Exception as e:
             logging.error(f"Error getting sink temperature: {e}")
             return None
@@ -163,25 +171,13 @@ class TECController:
             
         try:
             # Parameter 1020 is Actual Output Current
-            current = self.device.get_parameter(1020)
+            current = self.device.get_parameter(parameter_id=1020, address=self.address)
             # Parameter 1021 is Actual Output Voltage
-            voltage = self.device.get_parameter(1021)
+            voltage = self.device.get_parameter(parameter_id=1021, address=self.address)
             
             return abs(current * voltage)
         except Exception as e:
             logging.error(f"Error calculating power: {e}")
-            return None
-            
-    def get_device_status(self):
-        """Get detailed device status information."""
-        if not self.connected:
-            logging.error("Not connected to TEC Controller")
-            return None
-            
-        try:
-            return self.device.get_device_status()
-        except Exception as e:
-            logging.error(f"Error getting device status: {e}")
             return None
 
 
@@ -252,7 +248,7 @@ class ArduinoInterface:
             # Clear input buffer
             self.ser.reset_input_buffer()
             
-            # Request temperatures (Arduino should be programmed to respond to this)
+            # Request temperatures
             self.ser.write(b"READ\n")
             
             # Wait for response
@@ -261,17 +257,40 @@ class ArduinoInterface:
             # Read response
             response = self.ser.readline().decode().strip()
             
-            # Parse response (expected format: "liquid_temp,ambient_temp")
-            parts = response.split(',')
-            if len(parts) == 2:
+            # Parse response (try multiple patterns)
+            import re
+            
+            # Try pattern with Pt100/Pt1000 prefixes
+            pt100_match = re.search(r'Pt100\s*([\d.]+)', response)
+            pt1000_match = re.search(r'Pt1000\s*([\d.]+)', response)
+            
+            if pt100_match and pt1000_match:
+                ambient_temp = float(pt100_match.group(1))
+                liquid_temp = float(pt1000_match.group(1))
+                return liquid_temp, ambient_temp
+            
+            # Try simple comma-separated pattern
+            if ',' in response:
+                parts = response.split(',')
+                if len(parts) >= 2:
+                    try:
+                        liquid_temp = float(parts[0])
+                        ambient_temp = float(parts[1])
+                        return liquid_temp, ambient_temp
+                    except ValueError:
+                        pass
+            
+            # Try finding any numbers as last resort
+            numbers = re.findall(r'([\d.]+)', response)
+            if len(numbers) >= 2:
                 try:
-                    liquid_temp = float(parts[0])
-                    ambient_temp = float(parts[1])
+                    liquid_temp = float(numbers[1])  # Pt1000 usually comes second
+                    ambient_temp = float(numbers[0])  # Pt100 usually comes first
                     return liquid_temp, ambient_temp
                 except ValueError:
-                    logging.error(f"Invalid temperature values: {response}")
-            else:
-                logging.error(f"Unexpected response format: {response}")
+                    pass
+            
+            logging.error(f"Could not parse temperatures from response: {response}")
             
         except Exception as e:
             logging.error(f"Error reading temperatures from Arduino: {e}")
@@ -280,7 +299,7 @@ class ArduinoInterface:
 
 
 class TemperatureControl:
-    """Main class for temperature control system."""
+    """Main class for temperature control system with offset correction."""
     
     def __init__(self, tec_port=None, arduino_port=None):
         """Initialize the temperature control system."""
@@ -291,6 +310,13 @@ class TemperatureControl:
         self.data = []
         self.data_lock = threading.Lock()
         self.start_time = None
+        
+        # Coefficients for temperature offset correction formula
+        # y = 0.003x² - 0.353x + 6.414
+        # where y is the offset and x is the target liquid temperature
+        self.a = 0.003  # Coefficient of x²
+        self.b = -0.353  # Coefficient of x
+        self.c = 6.414  # Constant term
     
     def connect_devices(self):
         """Connect to both devices."""
@@ -312,6 +338,42 @@ class TemperatureControl:
         """Disconnect from both devices."""
         self.tec.disconnect()
         self.arduino.disconnect()
+    
+    def calculate_corrected_target(self, desired_liquid_temp, ambient_temp=None):
+        """
+        Calculate the corrected target temperature for the holder.
+        
+        Uses the temperature offset correction formula:
+        y = 0.003x² - 0.353x + 6.414
+        where y is the offset (liquid_temp - target_temp)
+        and x is the desired liquid temperature
+        
+        To get the target holder temperature, we need to solve:
+        desired_liquid_temp = target_temp + offset
+        target_temp = desired_liquid_temp - offset
+        target_temp = desired_liquid_temp - (0.003*desired_liquid_temp² - 0.353*desired_liquid_temp + 6.414)
+        
+        Args:
+            desired_liquid_temp: The desired temperature for the liquid
+            ambient_temp: Optional ambient temperature for additional compensation
+            
+        Returns:
+            The corrected target temperature to set for the holder
+        """
+        # Calculate expected offset using the formula
+        expected_offset = (self.a * desired_liquid_temp**2 + 
+                           self.b * desired_liquid_temp + 
+                           self.c)
+        
+        # The target holder temperature needs to be set lower than the desired liquid temp
+        # by the amount of the expected offset
+        corrected_target = desired_liquid_temp - expected_offset
+        
+        logging.info(f"Desired liquid temp: {desired_liquid_temp:.2f}°C, "
+                     f"Expected offset: {expected_offset:.2f}°C, "
+                     f"Setting holder to: {corrected_target:.2f}°C")
+        
+        return corrected_target
     
     def read_all_sensors(self):
         """Read data from all sensors."""
@@ -397,14 +459,33 @@ class TemperatureControl:
                 self.monitor_thread.join(timeout=2)
             logging.info("Monitoring stopped")
     
-    def set_temperature(self, temperature):
-        """Set the target temperature on the TEC controller."""
-        success = self.tec.set_target_temperature(temperature)
-        if success:
-            logging.info(f"Target temperature set to {temperature:.2f}°C")
+    def set_temperature(self, desired_liquid_temp, use_correction=True):
+        """
+        Set the temperature with optional offset correction.
+        
+        Args:
+            desired_liquid_temp: Desired liquid temperature in °C
+            use_correction: Whether to apply the offset correction formula
+            
+        Returns:
+            Boolean indicating success
+        """
+        if not use_correction:
+            # Set temperature directly without correction
+            success = self.tec.set_target_temperature(desired_liquid_temp)
+            if success:
+                logging.info(f"Target temperature set to {desired_liquid_temp:.2f}°C (no correction)")
+            return success
         else:
-            logging.error(f"Failed to set target temperature to {temperature:.2f}°C")
-        return success
+            # Apply temperature offset correction
+            corrected_target = self.calculate_corrected_target(desired_liquid_temp)
+            
+            # Set the corrected target temperature
+            success = self.tec.set_target_temperature(corrected_target)
+            if success:
+                logging.info(f"Corrected target temperature set to {corrected_target:.2f}°C "
+                             f"(for desired liquid temp {desired_liquid_temp:.2f}°C)")
+            return success
     
     def save_data(self, filename=None):
         """Save collected data to a CSV file."""
@@ -435,7 +516,7 @@ class TemperatureControl:
             except Exception as e:
                 logging.error(f"Error saving data: {e}")
     
-    def run_experiment(self, start_temp, stop_temp, increment, stabilization_time_minutes):
+    def run_experiment(self, start_temp, stop_temp, increment, stabilization_time_minutes, use_correction=True):
         """Run an experiment with temperature steps."""
         if self.experiment_running:
             logging.error("Experiment already running")
@@ -444,6 +525,7 @@ class TemperatureControl:
         self.experiment_running = True
         logging.info(f"Starting experiment: {start_temp}°C to {stop_temp}°C "
                      f"in {increment}°C steps with {stabilization_time_minutes} minutes stabilization")
+        logging.info(f"Temperature correction: {'Enabled' if use_correction else 'Disabled'}")
         
         # Calculate temperature steps
         steps = []
@@ -467,8 +549,8 @@ class TemperatureControl:
             for i, temp in enumerate(steps):
                 logging.info(f"Step {i+1}/{len(steps)}: Setting temperature to {temp:.2f}°C")
                 
-                # Set target temperature
-                if not self.set_temperature(temp):
+                # Set target temperature with or without correction
+                if not self.set_temperature(temp, use_correction=use_correction):
                     logging.error(f"Failed to set temperature for step {i+1}")
                     return False
                 
@@ -513,11 +595,12 @@ class TemperatureControl:
 
 def main():
     """Main function to parse arguments and run the temperature control system."""
-    parser = argparse.ArgumentParser(description="Temperature Control System")
+    parser = argparse.ArgumentParser(description="Enhanced Temperature Control System")
     parser.add_argument("--tec-port", help="Serial port for TEC controller")
     parser.add_argument("--arduino-port", help="Serial port for Arduino")
     parser.add_argument("--monitor", action="store_true", help="Just monitor temperatures without running an experiment")
     parser.add_argument("--set-temp", type=float, help="Set a single target temperature")
+    parser.add_argument("--no-correction", action="store_true", help="Disable temperature offset correction")
     parser.add_argument("--experiment", action="store_true", help="Run an experiment")
     parser.add_argument("--start-temp", type=float, help="Starting temperature for experiment")
     parser.add_argument("--stop-temp", type=float, help="Stopping temperature for experiment")
@@ -542,12 +625,13 @@ def main():
         
         if args.set_temp is not None:
             # Set a single temperature
-            if not temp_control.set_temperature(args.set_temp):
+            if not temp_control.set_temperature(args.set_temp, use_correction=not args.no_correction):
                 return 1
                 
             # Keep monitoring until interrupted
             try:
                 logging.info(f"Maintaining temperature at {args.set_temp}°C (press Ctrl+C to stop)")
+                print("\nPress Ctrl+C to stop monitoring")
                 while True:
                     time.sleep(1)
             except KeyboardInterrupt:
@@ -559,7 +643,8 @@ def main():
                 args.start_temp,
                 args.stop_temp,
                 args.increment,
-                args.stab_time
+                args.stab_time,
+                use_correction=not args.no_correction
             )
             
             if not success:
@@ -569,6 +654,7 @@ def main():
             # Just monitor temperatures
             try:
                 logging.info("Monitoring temperatures (press Ctrl+C to stop)")
+                print("\nPress Ctrl+C to stop monitoring")
                 while True:
                     time.sleep(1)
             except KeyboardInterrupt:
@@ -576,13 +662,16 @@ def main():
         
         elif args.interactive:
             # Interactive mode
-            print("\nInteractive Temperature Control")
-            print("==============================")
+            print("\nEnhanced Temperature Control System")
+            print("==================================")
             print("Commands:")
-            print("  set X     - Set temperature to X°C")
+            print("  set X     - Set temperature to X°C (with offset correction)")
+            print("  setraw X  - Set temperature to X°C (without offset correction)")
             print("  exp X Y Z W - Run experiment from X°C to Y°C in Z°C steps with W minutes stabilization")
+            print("  expraw X Y Z W - Run experiment without offset correction")
             print("  stop      - Stop running experiment")
             print("  save      - Save current data")
+            print("  status    - Show current temperatures")
             print("  help      - Show this help")
             print("  exit      - Exit program")
             
@@ -593,7 +682,14 @@ def main():
                     if cmd.startswith("set "):
                         try:
                             temp = float(cmd[4:])
-                            temp_control.set_temperature(temp)
+                            temp_control.set_temperature(temp, use_correction=True)
+                        except ValueError:
+                            logging.error("Invalid temperature")
+                    
+                    elif cmd.startswith("setraw "):
+                        try:
+                            temp = float(cmd[7:])
+                            temp_control.set_temperature(temp, use_correction=False)
                         except ValueError:
                             logging.error("Invalid temperature")
                     
@@ -623,7 +719,26 @@ def main():
                             elif start_temp > stop_temp and increment > 0:
                                 increment = -increment
                             
-                            temp_control.run_experiment(start_temp, stop_temp, increment, stab_time)
+                            # Run experiment with correction
+                            temp_control.run_experiment(start_temp, stop_temp, increment, stab_time, use_correction=True)
+                            
+                        except ValueError:
+                            logging.error("Invalid experiment parameters")
+                    
+                    elif cmd.startswith("expraw "):
+                        try:
+                            parts = cmd[7:].split()
+                            if len(parts) != 4:
+                                logging.error("Usage: expraw START_TEMP STOP_TEMP INCREMENT STAB_TIME")
+                                continue
+                            
+                            start_temp = float(parts[0])
+                            stop_temp = float(parts[1])
+                            increment = float(parts[2])
+                            stab_time = int(parts[3])
+                            
+                            # Run experiment without correction
+                            temp_control.run_experiment(start_temp, stop_temp, increment, stab_time, use_correction=False)
                             
                         except ValueError:
                             logging.error("Invalid experiment parameters")
@@ -638,12 +753,25 @@ def main():
                         else:
                             temp_control.save_data()
                     
+                    elif cmd == "status":
+                        data_point = temp_control.read_all_sensors()
+                        print("\nCurrent Temperatures:")
+                        print(f"  Holder:  {data_point['holder_temp']:.2f}°C" if data_point['holder_temp'] is not None else "  Holder:  N/A")
+                        print(f"  Liquid:  {data_point['liquid_temp']:.2f}°C" if data_point['liquid_temp'] is not None else "  Liquid:  N/A")
+                        print(f"  Ambient: {data_point['ambient_temp']:.2f}°C" if data_point['ambient_temp'] is not None else "  Ambient: N/A")
+                        print(f"  Target:  {data_point['target_temp']:.2f}°C" if data_point['target_temp'] is not None else "  Target:  N/A")
+                        print(f"  Sink:    {data_point['sink_temp']:.2f}°C" if data_point['sink_temp'] is not None else "  Sink:    N/A")
+                        print(f"  Power:   {data_point['power']:.2f}W" if data_point['power'] is not None else "  Power:   N/A")
+                    
                     elif cmd == "help":
                         print("Commands:")
-                        print("  set X     - Set temperature to X°C")
+                        print("  set X     - Set temperature to X°C (with offset correction)")
+                        print("  setraw X  - Set temperature to X°C (without offset correction)")
                         print("  exp X Y Z W - Run experiment from X°C to Y°C in Z°C steps with W minutes stabilization")
+                        print("  expraw X Y Z W - Run experiment without offset correction")
                         print("  stop      - Stop running experiment")
                         print("  save      - Save current data")
+                        print("  status    - Show current temperatures")
                         print("  help      - Show this help")
                         print("  exit      - Exit program")
                     
@@ -660,13 +788,16 @@ def main():
             # Default to interactive mode
             logging.info("No action specified. Running in interactive mode.")
             parser.print_help()
-            print("\nInteractive Temperature Control")
-            print("==============================")
+            print("\nEnhanced Temperature Control System")
+            print("==================================")
             print("Commands:")
-            print("  set X     - Set temperature to X°C")
+            print("  set X     - Set temperature to X°C (with offset correction)")
+            print("  setraw X  - Set temperature to X°C (without offset correction)")
             print("  exp X Y Z W - Run experiment from X°C to Y°C in Z°C steps with W minutes stabilization")
+            print("  expraw X Y Z W - Run experiment without offset correction")
             print("  stop      - Stop running experiment")
             print("  save      - Save current data")
+            print("  status    - Show current temperatures")
             print("  help      - Show this help")
             print("  exit      - Exit program")
             
@@ -677,7 +808,14 @@ def main():
                     if cmd.startswith("set "):
                         try:
                             temp = float(cmd[4:])
-                            temp_control.set_temperature(temp)
+                            temp_control.set_temperature(temp, use_correction=True)
+                        except ValueError:
+                            logging.error("Invalid temperature")
+                    
+                    elif cmd.startswith("setraw "):
+                        try:
+                            temp = float(cmd[7:])
+                            temp_control.set_temperature(temp, use_correction=False)
                         except ValueError:
                             logging.error("Invalid temperature")
                     
@@ -692,7 +830,27 @@ def main():
                             stop_temp = float(parts[1])
                             increment = float(parts[2])
                             stab_time = int(parts[3])
-                            temp_control.run_experiment(start_temp, stop_temp, increment, stab_time)
+                            
+                            # Run experiment with correction
+                            temp_control.run_experiment(start_temp, stop_temp, increment, stab_time, use_correction=True)
+                            
+                        except ValueError:
+                            logging.error("Invalid experiment parameters")
+                    
+                    elif cmd.startswith("expraw "):
+                        try:
+                            parts = cmd[7:].split()
+                            if len(parts) != 4:
+                                logging.error("Usage: expraw START_TEMP STOP_TEMP INCREMENT STAB_TIME")
+                                continue
+                            
+                            start_temp = float(parts[0])
+                            stop_temp = float(parts[1])
+                            increment = float(parts[2])
+                            stab_time = int(parts[3])
+                            
+                            # Run experiment without correction
+                            temp_control.run_experiment(start_temp, stop_temp, increment, stab_time, use_correction=False)
                             
                         except ValueError:
                             logging.error("Invalid experiment parameters")
@@ -707,12 +865,25 @@ def main():
                         else:
                             temp_control.save_data()
                     
+                    elif cmd == "status":
+                        data_point = temp_control.read_all_sensors()
+                        print("\nCurrent Temperatures:")
+                        print(f"  Holder:  {data_point['holder_temp']:.2f}°C" if data_point['holder_temp'] is not None else "  Holder:  N/A")
+                        print(f"  Liquid:  {data_point['liquid_temp']:.2f}°C" if data_point['liquid_temp'] is not None else "  Liquid:  N/A")
+                        print(f"  Ambient: {data_point['ambient_temp']:.2f}°C" if data_point['ambient_temp'] is not None else "  Ambient: N/A")
+                        print(f"  Target:  {data_point['target_temp']:.2f}°C" if data_point['target_temp'] is not None else "  Target:  N/A")
+                        print(f"  Sink:    {data_point['sink_temp']:.2f}°C" if data_point['sink_temp'] is not None else "  Sink:    N/A")
+                        print(f"  Power:   {data_point['power']:.2f}W" if data_point['power'] is not None else "  Power:   N/A")
+                    
                     elif cmd == "help":
                         print("Commands:")
-                        print("  set X     - Set temperature to X°C")
+                        print("  set X     - Set temperature to X°C (with offset correction)")
+                        print("  setraw X  - Set temperature to X°C (without offset correction)")
                         print("  exp X Y Z W - Run experiment from X°C to Y°C in Z°C steps with W minutes stabilization")
+                        print("  expraw X Y Z W - Run experiment without offset correction")
                         print("  stop      - Stop running experiment")
                         print("  save      - Save current data")
+                        print("  status    - Show current temperatures")
                         print("  help      - Show this help")
                         print("  exit      - Exit program")
                     
