@@ -31,6 +31,19 @@ end
 
 fprintf('Visualizing data from: %s\n', filename);
 
+% Allow for manual override of target temperature
+prompt = 'Override target temperature? (y/n): ';
+overrideResponse = input(prompt, 's');
+overrideTarget = false;
+manualTargetTemp = NaN;
+
+if strcmpi(overrideResponse, 'y')
+    prompt = 'Enter the correct target temperature in °C: ';
+    manualTargetTemp = input(prompt);
+    overrideTarget = true;
+    fprintf('Using manual target temperature: %.1f°C\n', manualTargetTemp);
+end
+
 %% Read Data
 try
     % Read measurement data and settings
@@ -58,7 +71,13 @@ if hasSteps
         if isempty(choice)
             % Visualize all steps
             for i = 1:length(steps)
-                visualizeTemperature(steps{i}, sprintf('Step %d (Target: %.1f°C)', i, mean(steps{i}(:,4))));
+                % Apply manual target override if specified
+                if overrideTarget
+                    actualTargetTemp = manualTargetTemp;
+                else
+                    actualTargetTemp = settings.startTemp + (i-1) * settings.increment;
+                end
+                visualizeTemperature(steps{i}, sprintf('Step %d (Target Liquid: %.1f°C)', i, actualTargetTemp), actualTargetTemp);
             end
         else
             % Visualize specific step
@@ -66,25 +85,46 @@ if hasSteps
             if isnan(stepNum) || stepNum < 1 || stepNum > length(steps)
                 error('Invalid step number: %s', choice);
             end
-            visualizeTemperature(steps{stepNum}, sprintf('Step %d (Target: %.1f°C)', stepNum, mean(steps{stepNum}(:,4))));
+            % Apply manual target override if specified
+            if overrideTarget
+                actualTargetTemp = manualTargetTemp;
+            else
+                actualTargetTemp = settings.startTemp + (stepNum-1) * settings.increment;
+            end
+            visualizeTemperature(steps{stepNum}, sprintf('Step %d (Target Liquid: %.1f°C)', stepNum, actualTargetTemp), actualTargetTemp);
         end
     catch ME
         warning('Error splitting steps: %s\nTreating as single measurement.', ME.message);
-        visualizeTemperature(data, 'Temperature Measurement');
+        % For single measurements, apply manual target override if specified
+        if overrideTarget
+            actualTargetTemp = manualTargetTemp;
+        else
+            actualTargetTemp = settings.startTemp;
+        end
+        visualizeTemperature(data, 'Temperature Measurement', actualTargetTemp);
     end
 else
     % Visualize single measurement
-    visualizeTemperature(data, 'Temperature Measurement');
+    % Apply manual target override if specified
+    if overrideTarget
+        actualTargetTemp = manualTargetTemp;
+    else
+        actualTargetTemp = settings.startTemp;
+    end
+    visualizeTemperature(data, 'Temperature Measurement', actualTargetTemp);
 end
 
 %% Visualization Function
-function visualizeTemperature(data, titleText)
+function visualizeTemperature(data, titleText, targetLiquidTemp)
     % Extract data
     timeSeconds = data(:, 1) - data(1, 1);
     timeHours = timeSeconds / 3600;
     holderTemp = data(:, 2);
     liquidTemp = data(:, 3);
-    targetTemp = mean(data(:, 4));
+    holderTargetTemp = mean(data(:, 4));
+    
+    % Use the provided target liquid temperature for comparison
+    targetTemp = targetLiquidTemp;
     
     % Define acceptable range (±0.5°C)
     upperBound = targetTemp + 0.5;
@@ -123,9 +163,9 @@ function visualizeTemperature(data, titleText)
     
     % Display statistics
     fprintf('\n--- Stable Region Statistics ---\n');
-    fprintf('Target Temperature: %.2f°C (Range: %.2f to %.2f°C)\n', targetTemp, lowerBound, upperBound);
-    fprintf('Liquid Temperature: %.2f ± %.3f°C\n', liquidStableMean, liquidStableStd);
-    fprintf('Holder Temperature: %.2f ± %.3f°C\n', holderStableMean, holderStableStd);
+    fprintf('Target Liquid Temperature: %.2f°C (Range: %.2f to %.2f°C)\n', targetTemp, lowerBound, upperBound);
+    fprintf('Actual Liquid Temperature: %.2f ± %.3f°C\n', liquidStableMean, liquidStableStd);
+    fprintf('Holder Temperature: %.2f ± %.3f°C (target: %.2f°C)\n', holderStableMean, holderStableStd, holderTargetTemp);
     
     % Check if temperature is within specification
     withinSpec = (liquidStableMean >= lowerBound && liquidStableMean <= upperBound && liquidStableStd <= 0.25);
@@ -146,11 +186,12 @@ function visualizeTemperature(data, titleText)
     % Add annotation to the plot with statistics
     textPos = [0.02, 0.15]; % normalized position
     str = sprintf(['Statistics (stable region):\n', ...
-                   'Target: %.2f°C (±0.5°C)\n', ...
-                   'Liquid: %.2f ± %.3f°C\n', ...
-                   'Holder: %.2f ± %.3f°C'], ...
+                   'Target Liquid: %.2f°C (±0.5°C)\n', ...
+                   'Actual Liquid: %.2f ± %.3f°C\n', ...
+                   'Holder: %.2f ± %.3f°C\n', ...
+                   'Holder Target: %.2f°C'], ...
                    targetTemp, liquidStableMean, liquidStableStd, ...
-                   holderStableMean, holderStableStd);
+                   holderStableMean, holderStableStd, holderTargetTemp);
     
     annotation('textbox', [textPos, 0.3, 0.1], 'String', str, 'FitBoxToText', 'on', ...
                'BackgroundColor', [1 1 1], 'EdgeColor', [0.7 0.7 0.7]);
