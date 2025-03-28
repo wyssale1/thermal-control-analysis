@@ -29,12 +29,12 @@ class TemperatureControl:
         self.experiment_running = False
         self.stop_event = threading.Event()
         
-        # Coefficients for temperature offset correction formula
-        # y = 0.003x² - 0.353x + 6.414
-        # where y is the offset and x is the target liquid temperature
-        self.a = 0.003  # Coefficient of x²
-        self.b = -0.353  # Coefficient of x
-        self.c = 6.414  # Constant term
+        # Coefficients for temperature correction formula from LabVIEW:
+        # x = (-0.5645 + sqrt(0.5645**2 - 4*0.0039*(4.8536-y)))/(2*0.0039)
+        # Where y is the desired liquid temperature and x is the corrected target temperature
+        self.a = 0.0039  # Coefficient of x²
+        self.b = 0.5645  # Coefficient of x
+        self.c = 4.8536  # Constant term
         
         # Optional ambient temperature correction
         self.use_ambient_correction = False
@@ -73,15 +73,12 @@ class TemperatureControl:
         """
         Calculate the corrected target temperature for the holder.
         
-        Uses the temperature offset correction formula:
-        y = 0.003x² - 0.353x + 6.414
-        where y is the offset (liquid_temp - target_temp)
-        and x is the desired liquid temperature
+        Uses the temperature correction formula from LabVIEW:
+        x = (-0.5645 + sqrt(0.5645**2 - 4*0.0039*(4.8536-y)))/(2*0.0039)
+        Where y is the desired liquid temperature and x is the corrected target temperature
         
-        To get the target holder temperature, we need to solve:
-        desired_liquid_temp = target_temp + offset
-        target_temp = desired_liquid_temp - offset
-        target_temp = desired_liquid_temp - (0.003*desired_liquid_temp² - 0.353*desired_liquid_temp + 6.414)
+        This is based on solving the quadratic equation: ax² + bx + (c-y) = 0
+        Using the quadratic formula: x = (-b ± sqrt(b² - 4a(c-y)))/(2a)
         
         Args:
             desired_liquid_temp: The desired temperature for the liquid
@@ -90,23 +87,43 @@ class TemperatureControl:
         Returns:
             The corrected target temperature to set for the holder
         """
-        # Calculate expected offset using the formula
-        expected_offset = (self.a * desired_liquid_temp**2 + 
-                           self.b * desired_liquid_temp + 
-                           self.c)
-        
         # Apply ambient temperature correction if enabled and ambient_temp is provided
+        ambient_correction = 0.0
         if self.use_ambient_correction and ambient_temp is not None:
             ambient_correction = self.ambient_coefficient * (ambient_temp - self.ambient_reference)
-            expected_offset += ambient_correction
             logging.info(f"Applied ambient correction: {ambient_correction:.2f}°C (ambient: {ambient_temp:.2f}°C)")
         
-        # The target holder temperature needs to be set lower than the desired liquid temp
-        # by the amount of the expected offset
-        corrected_target = desired_liquid_temp - expected_offset
+        # Adjusted target temperature with ambient correction
+        adjusted_desired_temp = desired_liquid_temp - ambient_correction
+        
+        try:
+            # Calculate discriminant of quadratic formula
+            discriminant = self.b**2 - 4 * self.a * (self.c - adjusted_desired_temp)
+            
+            if discriminant < 0:
+                # No real roots, fallback to linear approximation
+                logging.warning(f"No real solution found for temperature {desired_liquid_temp}°C. Using approximation.")
+                # Linear approximation: assume ax² is small compared to bx
+                corrected_target = (adjusted_desired_temp - self.c) / self.b
+            else:
+                # Use quadratic formula, taking the positive square root solution
+                # This is based on the LabVIEW formula that uses the + sign
+                corrected_target = (-self.b + (discriminant)**0.5) / (2 * self.a)
+                
+                # If result is unreasonably outside the operating range, try other solution
+                if corrected_target < 0 or corrected_target > 100:
+                    alt_target = (-self.b - (discriminant)**0.5) / (2 * self.a)
+                    if 0 <= alt_target <= 100:
+                        logging.info(f"Using alternative solution {alt_target:.2f}°C instead of {corrected_target:.2f}°C")
+                        corrected_target = alt_target
+        
+        except Exception as e:
+            logging.error(f"Error calculating corrected temperature: {e}")
+            # Fallback: use direct setting
+            corrected_target = desired_liquid_temp
+            logging.warning(f"Using direct temperature setting without correction: {corrected_target:.2f}°C")
         
         logging.info(f"Desired liquid temp: {desired_liquid_temp:.2f}°C, "
-                     f"Expected offset: {expected_offset:.2f}°C, "
                      f"Setting holder to: {corrected_target:.2f}°C")
         
         return corrected_target
@@ -354,8 +371,8 @@ class TemperatureControl:
         if ambient_coeff is not None:
             self.ambient_coefficient = ambient_coeff
             
-        logging.info(f"Updated correction parameters: "
-                    f"y = {self.a}x² + {self.b}x + {self.c}")
+        logging.info(f"Updated correction parameters for quadratic formula: "
+                    f"x = (-{self.b} ± sqrt({self.b}² - 4*{self.a}*({self.c}-y)))/(2*{self.a})")
         if self.use_ambient_correction:
             logging.info(f"Ambient correction enabled with reference temp {self.ambient_reference}°C "
                         f"and coefficient {self.ambient_coefficient}")
