@@ -10,7 +10,7 @@ import logging
 import time
 import os
 import sys
-from utils.logger import Colors
+from thermal_control.utils.logger import Colors
 
 def create_parser():
     """Create and return an argument parser for temperature control."""

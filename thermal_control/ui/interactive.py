@@ -6,7 +6,7 @@ This module provides an interactive command-line interface for temperature contr
 """
 
 import logging
-from utils.logger import Colors
+from thermal_control.utils.logger import Colors
 
 class InteractiveUI:
     """Interactive user interface for temperature control."""
