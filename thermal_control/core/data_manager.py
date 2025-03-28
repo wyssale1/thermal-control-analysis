@@ -31,7 +31,7 @@ class DataManager:
         with self.data_lock:
             self.data.clear()
             self.start_time = datetime.datetime.now()
-    
+
     def add_data_point(self, data_point):
         """
         Add a data point to the collection.

@@ -28,6 +28,7 @@ class TemperatureControl:
         self.running = False
         self.experiment_running = False
         self.stop_event = threading.Event()
+        self.desired_liquid_temp = None
         
         # Coefficients for temperature correction formula from LabVIEW:
         # x = (-0.5645 + sqrt(0.5645**2 - 4*0.0039*(4.8536-y)))/(2*0.0039)
@@ -148,7 +149,8 @@ class TemperatureControl:
             "liquid_temp": liquid_temp,
             "sink_temp": sink_temp,
             "ambient_temp": ambient_temp,
-            "power": power
+            "power": power,
+            "desired_liquid_temp": self.desired_liquid_temp
         }
         
         return data_point
@@ -221,6 +223,9 @@ class TemperatureControl:
         Returns:
             Boolean indicating success
         """
+        # Store the desired liquid temperature for data collection
+        self.desired_liquid_temp = desired_liquid_temp
+
         if not use_correction:
             # Set temperature directly without correction
             success = self.tec.set_target_temperature(desired_liquid_temp)
