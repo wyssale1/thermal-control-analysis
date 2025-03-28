@@ -1,1 +1,0 @@
-"""Device interface module for temperature control."""
