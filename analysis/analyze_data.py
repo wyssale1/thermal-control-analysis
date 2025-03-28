@@ -11,7 +11,6 @@ import argparse
 import logging
 import pandas as pd
 from datetime import datetime
-from analysis.utils.file_selection import select_file_interactive, list_available_files
 
 # Add parent directory to path to allow imports from the package
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -42,6 +41,7 @@ from thermal_control.utils.logger import (
     get_default_log_file,
     Colors
 )
+from analysis.utils.file_selection import select_file_interactive, list_available_files
 
 def analyze_temperature_data(filename, filepath=None, output_dir=None, config_file=None, 
                            update_config=False, with_ambient=False, plot_only=False):
@@ -171,32 +171,6 @@ def analyze_multiple_files(file_list, filepath=None, output_dir=None, config_fil
     
     return results
 
-def list_available_files(data_dir=None):
-    """
-    List available temperature data files.
-    
-    Args:
-        data_dir: Directory to scan (default is 'data/raw')
-        
-    Returns:
-        List of file names
-    """
-    # Set default data directory if not provided
-    if data_dir is None:
-        config = read_config()
-        data_dir = config.get('paths', 'raw_data_dir', fallback='data/raw')
-    
-    # List files in directory
-    if not os.path.exists(data_dir):
-        logging.error(f"Data directory does not exist: {data_dir}")
-        return []
-    
-    # List files with supported extensions
-    supported_extensions = ['.csv', '.xlsx', '.xls']
-    file_list = [f for f in os.listdir(data_dir) if any(f.lower().endswith(ext) for ext in supported_extensions)]
-    
-    return file_list
-
 def main():
     """Main function."""
     # Parse command-line arguments
@@ -230,34 +204,17 @@ def main():
     
     # List available files if no file specified
     if not args.file and not args.all:
-        print("\nAvailable data files:")
-        file_list = list_available_files(data_dir)
+        selected_file, process_all, file_list = select_file_interactive(
+            data_dir,
+            prompt="Select a file number, or 'all' to analyze all files"
+        )
         
-        if not file_list:
-            print(f"{Colors.YELLOW}No data files found in {data_dir}{Colors.RESET}")
-            return 1
-        
-        for i, f in enumerate(file_list):
-            print(f"  {i+1}: {f}")
-        
-        # Prompt user to select a file
-        try:
-            selection = input("\nSelect a file number, or 'all' to analyze all files (default: 1): ")
-            
-            if selection.lower() == 'all':
-                args.all = True
-            elif selection.strip():
-                idx = int(selection) - 1
-                if 0 <= idx < len(file_list):
-                    args.file = file_list[idx]
-                else:
-                    print(f"{Colors.RED}Invalid selection: {selection}{Colors.RESET}")
-                    return 1
-            else:
-                # Default to first file
-                args.file = file_list[0]
-        except ValueError:
-            print(f"{Colors.RED}Invalid selection: {selection}{Colors.RESET}")
+        if process_all:
+            args.all = True
+        elif selected_file:
+            args.file = selected_file
+        else:
+            print(f"{Colors.RED}No file selected{Colors.RESET}")
             return 1
     
     # Analyze data
