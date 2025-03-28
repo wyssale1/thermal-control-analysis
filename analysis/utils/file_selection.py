@@ -7,6 +7,7 @@ This module provides functions for listing and selecting data files.
 
 import os
 import logging
+import datetime
 from thermal_control.utils.logger import Colors
 from thermal_control.utils.config_reader import read_config
 
@@ -57,14 +58,9 @@ def print_available_files(data_dir=None):
     
     print("\nAvailable data files:")
     for i, f in enumerate(file_list):
-        # Format with modification time
-        mod_time = os.path.getmtime(os.path.join(data_dir, f))
-        mod_time_str = " (" + os.path.getmtime(os.path.join(data_dir, f)).strftime("%Y-%m-%d %H:%M") + ")"
-        
         # Try to include modification time
         try:
-            from datetime import datetime
-            mod_time = datetime.fromtimestamp(os.path.getmtime(os.path.join(data_dir, f)))
+            mod_time = datetime.datetime.fromtimestamp(os.path.getmtime(os.path.join(data_dir, f)))
             mod_time_str = f" ({mod_time.strftime('%Y-%m-%d %H:%M')})"
         except:
             mod_time_str = ""

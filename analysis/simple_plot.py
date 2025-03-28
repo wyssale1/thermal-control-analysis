@@ -9,6 +9,7 @@ Designed for quick assessment of temperature control performance.
 import os
 import sys
 import argparse
+import logging
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
