@@ -19,7 +19,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from thermal_control.utils.logger import Colors, setup_logger, get_default_log_file
 from thermal_control.utils.config_reader import read_config, get_correction_parameters, update_correction_parameters
+from thermal_control.utils.config_reader import save_interpolation_data, load_interpolation_data
 from analysis.utils.file_selection import select_file_interactive, list_available_files
+from analysis.fit_parameters import fit_correction_parameters, create_interpolation_model, visualize_interpolation
 
 def read_measurement_file(filename, filepath=None, filter_missing=True):
     """
@@ -306,184 +308,6 @@ def extract_offset_data(step_df, step_name=None):
         print(f"Error extracting offset data: {e}")
         return None
 
-def fit_correction_parameters(offset_data, use_ambient=False, ambient_ref=20.0, initial_params=None):
-    """
-    Fit temperature correction parameters to offset data.
-    
-    Args:
-        offset_data: List of dicts with offset data
-        use_ambient: Whether to include ambient temperature correction
-        ambient_ref: Reference ambient temperature
-        initial_params: Initial parameter values (optional)
-        
-    Returns:
-        Dict with fitted parameters
-    """
-    try:
-        # Ensure we have enough data points
-        if len(offset_data) < 3:
-            print("Error: Not enough data points to fit parameters")
-            return None
-            
-        # Extract data
-        target_temps = np.array([d['target_temp'] for d in offset_data])
-        liquid_offsets = np.array([d['liquid_offset'] for d in offset_data])
-        
-        # Set default initial parameters if not provided
-        if initial_params is None:
-            if use_ambient:
-                initial_params = {
-                    'a': 0.003,
-                    'b': -0.3,
-                    'c': 6.0,
-                    'ambient_coeff': 0.0
-                }
-            else:
-                initial_params = {
-                    'a': 0.003,
-                    'b': -0.3,
-                    'c': 6.0
-                }
-        
-        # Define model functions
-        def quadratic_model(x, a, b, c):
-            """Quadratic model: y = ax² + bx + c"""
-            return a * x**2 + b * x + c
-        
-        def quadratic_model_with_ambient(x, a, b, c, d):
-            """Quadratic model with ambient correction: y = ax² + bx + c + d*(ambient-ref)"""
-            target_temp, ambient_diff = x
-            return a * target_temp**2 + b * target_temp + c + d * ambient_diff
-        
-        # Import curve_fit for parameter fitting
-        from scipy.optimize import curve_fit
-        
-        if use_ambient:
-            # Extract ambient temperatures
-            if not all('ambient_temp_mean' in d for d in offset_data):
-                print("Error: Ambient temperature data not available for all steps")
-                use_ambient = False
-            else:
-                ambient_temps = np.array([d['ambient_temp_mean'] for d in offset_data])
-                
-                # Calculate ambient temperature differences from reference
-                ambient_diffs = ambient_temps - ambient_ref
-                
-                # Prepare X data for curve_fit (target_temp, ambient_diff)
-                X = (target_temps, ambient_diffs)
-                
-                # Initial parameter values
-                p0 = [
-                    initial_params.get('a', 0.003),
-                    initial_params.get('b', -0.3),
-                    initial_params.get('c', 6.0),
-                    initial_params.get('ambient_coeff', 0.0)
-                ]
-                
-                # Fit the model
-                popt, pcov = curve_fit(quadratic_model_with_ambient, X, liquid_offsets, p0=p0)
-                
-                # Extract parameters
-                a, b, c, ambient_coeff = popt
-                
-                # Calculate parameter errors
-                perr = np.sqrt(np.diag(pcov))
-                a_err, b_err, c_err, ambient_coeff_err = perr
-                
-                # Create result dictionary
-                result = {
-                    'a': a,
-                    'b': b,
-                    'c': c,
-                    'use_ambient': True,
-                    'ambient_ref': ambient_ref,
-                    'ambient_coeff': ambient_coeff,
-                    'a_err': a_err,
-                    'b_err': b_err,
-                    'c_err': c_err,
-                    'ambient_coeff_err': ambient_coeff_err
-                }
-                
-                # Calculate R² (coefficient of determination)
-                model_predictions = quadratic_model_with_ambient(X, a, b, c, ambient_coeff)
-                ss_total = np.sum((liquid_offsets - np.mean(liquid_offsets))**2)
-                ss_residual = np.sum((liquid_offsets - model_predictions)**2)
-                r_squared = 1 - (ss_residual / ss_total)
-                
-                # Add R² to result
-                result['r_squared'] = r_squared
-                
-                # Calculate RMSE (root mean squared error)
-                rmse = np.sqrt(np.mean((liquid_offsets - model_predictions)**2))
-                result['rmse'] = rmse
-                
-                # Print results
-                print("\nFitted parameters with ambient temperature correction:")
-                print(f"  a = {a:.6f} ± {a_err:.6f}")
-                print(f"  b = {b:.6f} ± {b_err:.6f}")
-                print(f"  c = {c:.6f} ± {c_err:.6f}")
-                print(f"  ambient_coeff = {ambient_coeff:.6f} ± {ambient_coeff_err:.6f}")
-                print(f"  R² = {r_squared:.4f}")
-                print(f"  RMSE = {rmse:.4f}°C")
-                
-        else:
-            # Fit simple quadratic model
-            p0 = [
-                initial_params.get('a', 0.003),
-                initial_params.get('b', -0.3),
-                initial_params.get('c', 6.0)
-            ]
-            
-            # Fit the model
-            popt, pcov = curve_fit(quadratic_model, target_temps, liquid_offsets, p0=p0)
-            
-            # Extract parameters
-            a, b, c = popt
-            
-            # Calculate parameter errors
-            perr = np.sqrt(np.diag(pcov))
-            a_err, b_err, c_err = perr
-            
-            # Create result dictionary
-            result = {
-                'a': a,
-                'b': b,
-                'c': c,
-                'use_ambient': False,
-                'a_err': a_err,
-                'b_err': b_err,
-                'c_err': c_err
-            }
-            
-            # Calculate R² (coefficient of determination)
-            model_predictions = quadratic_model(target_temps, a, b, c)
-            ss_total = np.sum((liquid_offsets - np.mean(liquid_offsets))**2)
-            ss_residual = np.sum((liquid_offsets - model_predictions)**2)
-            r_squared = 1 - (ss_residual / ss_total)
-            
-            # Add R² to result
-            result['r_squared'] = r_squared
-            
-            # Calculate RMSE (root mean squared error)
-            rmse = np.sqrt(np.mean((liquid_offsets - model_predictions)**2))
-            result['rmse'] = rmse
-            
-            # Print results
-            print("\nFitted parameters without ambient temperature correction:")
-            print(f"  a = {a:.6f} ± {a_err:.6f}")
-            print(f"  b = {b:.6f} ± {b_err:.6f}")
-            print(f"  c = {c:.6f} ± {c_err:.6f}")
-            print(f"  R² = {r_squared:.4f}")
-            print(f"  RMSE = {rmse:.4f}°C")
-        
-        return result
-    
-    except Exception as e:
-        print(f"Error fitting correction parameters: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
 def visualize_results(df, steps, offset_data, params, filename, output_dir):
     """
     Create visualization of temperature data and fitted model.
@@ -611,9 +435,10 @@ def visualize_results(df, steps, offset_data, params, filename, output_dir):
         return {}
 
 def analyze_temperature_data(filename, filepath=None, output_dir=None, use_ambient=False, 
-                           update_config=False, config_file=None, visualize=True):
+                           update_config=False, config_file=None, visualize=True,
+                           use_interpolation=True):
     """
-    Analyze temperature data to fit correction parameters.
+    Analyze temperature data to fit correction parameters or create interpolation model.
     
     Args:
         filename: Name of the data file
@@ -623,6 +448,7 @@ def analyze_temperature_data(filename, filepath=None, output_dir=None, use_ambie
         update_config: Whether to update config file with new parameters (default: False)
         config_file: Path to config file (default: None)
         visualize: Whether to create visualizations (default: True)
+        use_interpolation: Whether to use interpolation model instead of polynomial fitting
         
     Returns:
         Dict with analysis results
@@ -664,44 +490,76 @@ def analyze_temperature_data(filename, filepath=None, output_dir=None, use_ambie
         print(f"{Colors.RED}Error: Failed to extract offset data from temperature steps{Colors.RESET}")
         return None
         
-    # Fit correction parameters
-    fitted_params = fit_correction_parameters(
-        offset_data, 
-        use_ambient=use_ambient,
-        ambient_ref=20.0  # Default reference temperature
-    )
-    
-    if not fitted_params:
-        print(f"{Colors.RED}Error: Failed to fit correction parameters{Colors.RESET}")
-        return None
-    
-    # Create visualizations if requested
+    # Visualization paths
     visualization_paths = {}
-    if visualize:
-        visualization_paths = visualize_results(
-            df, steps, offset_data, fitted_params, filename, output_dir
+        
+    if use_interpolation:
+        # Create interpolation model
+        interp_data = create_interpolation_model(offset_data)
+        
+        # Visualize interpolation if requested
+        if visualize:
+            interp_paths = visualize_interpolation(offset_data, interp_data, filename, output_dir)
+            visualization_paths.update(interp_paths)
+        
+        # Save interpolation data if requested
+        if update_config:
+            success = save_interpolation_data(interp_data)
+            if success:
+                print(f"{Colors.GREEN}Saved interpolation data for temperature correction{Colors.RESET}")
+            else:
+                print(f"{Colors.RED}Failed to save interpolation data{Colors.RESET}")
+        
+        # Return results with interpolation data
+        results = {
+            'filename': filename,
+            'settings': settings,
+            'data_points': len(df),
+            'temperature_steps': len(steps),
+            'offset_data': offset_data,
+            'interp_data': interp_data,
+            'visualization_paths': visualization_paths,
+            'interp_model_saved': update_config and success
+        }
+    else:
+        # Use polynomial fitting
+        fitted_params = fit_correction_parameters(
+            offset_data, 
+            use_ambient=use_ambient,
+            ambient_ref=20.0  # Default reference temperature
         )
-    
-    # Update config file if requested
-    if update_config and fitted_params:
-        # Update config
-        success = update_correction_parameters(fitted_params, config_file)
-        if success:
-            print(f"{Colors.GREEN}Updated configuration with new parameters{Colors.RESET}")
-        else:
-            print(f"{Colors.RED}Failed to update configuration{Colors.RESET}")
-    
-    # Return analysis results
-    results = {
-        'filename': filename,
-        'settings': settings,
-        'data_points': len(df),
-        'temperature_steps': len(steps),
-        'offset_data': offset_data,
-        'fitted_params': fitted_params,
-        'visualization_paths': visualization_paths,
-        'config_updated': update_config and fitted_params is not None
-    }
+        
+        if not fitted_params:
+            print(f"{Colors.RED}Error: Failed to fit correction parameters{Colors.RESET}")
+            return None
+        
+        # Create visualizations if requested
+        if visualize:
+            poly_paths = visualize_results(
+                df, steps, offset_data, fitted_params, filename, output_dir
+            )
+            visualization_paths.update(poly_paths)
+        
+        # Update config file if requested
+        if update_config and fitted_params:
+            # Update config
+            success = update_correction_parameters(fitted_params, config_file)
+            if success:
+                print(f"{Colors.GREEN}Updated configuration with new parameters{Colors.RESET}")
+            else:
+                print(f"{Colors.RED}Failed to update configuration{Colors.RESET}")
+        
+        # Return analysis results
+        results = {
+            'filename': filename,
+            'settings': settings,
+            'data_points': len(df),
+            'temperature_steps': len(steps),
+            'offset_data': offset_data,
+            'fitted_params': fitted_params,
+            'visualization_paths': visualization_paths,
+            'config_updated': update_config and fitted_params is not None
+        }
     
     return results
 
@@ -716,6 +574,8 @@ def main():
     parser.add_argument("--use-ambient", action="store_true", help="Include ambient temperature in the model")
     parser.add_argument("--update-config", action="store_true", help="Update configuration with fitted parameters")
     parser.add_argument("--no-visualize", action="store_true", help="Skip visualization generation")
+    parser.add_argument("--use-interpolation", action="store_true", help="Use interpolation model instead of polynomial")
+    parser.add_argument("--polynomial", action="store_true", help="Force using polynomial model instead of interpolation")
     parser.add_argument("--log-file", help="Path to log file")
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                       default="INFO", help="Logging level")
@@ -731,9 +591,13 @@ def main():
     data_dir = args.data_dir or config.get('paths', 'raw_data_dir', fallback='data/raw')
     output_dir = args.output_dir or config.get('paths', 'processed_data_dir', fallback='data/processed')
     
+    # Determine whether to use interpolation (default to interpolation unless --polynomial is specified)
+    use_interpolation = args.use_interpolation or (not args.polynomial)
+    
     # Welcome message
     print(f"\n{Colors.CYAN}Temperature Data Analysis{Colors.RESET}")
     print(f"{Colors.CYAN}========================{Colors.RESET}")
+    print(f"Using {'interpolation' if use_interpolation else 'polynomial'} model")
     
     filename = args.file
     
@@ -759,37 +623,54 @@ def main():
             use_ambient=args.use_ambient,
             update_config=args.update_config,
             config_file=args.config_file,
-            visualize=not args.no_visualize
+            visualize=not args.no_visualize,
+            use_interpolation=use_interpolation
         )
         
         if results:
             # Print summary of results
             print(f"\n{Colors.GREEN}Analysis completed{Colors.RESET}")
             
-            params = results['fitted_params']
-            print("\nFitted Parameters:")
-            print(f"  a = {params['a']:.6f}")
-            print(f"  b = {params['b']:.6f}")
-            print(f"  c = {params['c']:.6f}")
-            
-            if params.get('use_ambient', False):
-                print(f"  ambient_ref = {params['ambient_ref']:.2f}°C")
-                print(f"  ambient_coeff = {params['ambient_coeff']:.6f}")
-            
-            print(f"  R² = {params.get('r_squared', 0):.4f}")
-            print(f"  RMSE = {params.get('rmse', 0):.4f}°C")
+            if use_interpolation and 'interp_data' in results:
+                # Interpolation model results
+                interp_data = results['interp_data']
+                print("\nInterpolation Model:")
+                print(f"  Type: {interp_data.get('interp_kind', 'unknown')}")
+                print(f"  Temperature range: {interp_data.get('temp_min', 0):.2f}°C to {interp_data.get('temp_max', 0):.2f}°C")
+                print(f"  Data points: {len(interp_data.get('target_temps', []))}")
+                print(f"  R²: {interp_data.get('r_squared', 0):.4f}")
+                print(f"  RMSE: {interp_data.get('rmse', 0):.4f}°C")
+            elif 'fitted_params' in results:
+                # Polynomial model results
+                params = results['fitted_params']
+                print("\nPolynomial Fitted Parameters:")
+                print(f"  a = {params['a']:.6f}")
+                print(f"  b = {params['b']:.6f}")
+                print(f"  c = {params['c']:.6f}")
+                
+                if params.get('use_ambient', False):
+                    print(f"  ambient_ref = {params['ambient_ref']:.2f}°C")
+                    print(f"  ambient_coeff = {params['ambient_coeff']:.6f}")
+                
+                print(f"  R² = {params.get('r_squared', 0):.4f}")
+                print(f"  RMSE = {params.get('rmse', 0):.4f}°C")
             
             if results.get('visualization_paths'):
                 print("\nOutput files:")
                 for name, path in results['visualization_paths'].items():
                     print(f"  {name}: {path}")
             
-            # Display the formula for calculating corrected target temperature
-            a, b, c = params['a'], params['b'], params['c']
-            print(f"\n{Colors.CYAN}Temperature Correction Formula:{Colors.RESET}")
-            print(f"  y = {a:.6f}x² + {b:.6f}x + {c:.6f}")
-            print(f"  Where y is the offset and x is the target temperature")
-            print(f"  To calculate corrected target: x = (-{b:.6f} + sqrt({b:.6f}² - 4*{a:.6f}*({c:.6f}-y)))/(2*{a:.6f})")
+            # Display the formula or information about accessing the interpolation model
+            if use_interpolation:
+                print(f"\n{Colors.CYAN}Temperature Correction Using Interpolation:{Colors.RESET}")
+                print(f"  The interpolation model has been saved and can be loaded by the temperature controller")
+                print(f"  Enable interpolation in temperature_control.py to use this model")
+            elif 'fitted_params' in results:
+                a, b, c = params['a'], params['b'], params['c']
+                print(f"\n{Colors.CYAN}Temperature Correction Formula:{Colors.RESET}")
+                print(f"  y = {a:.6f}x² + {b:.6f}x + {c:.6f}")
+                print(f"  Where y is the offset and x is the target temperature")
+                print(f"  To calculate corrected target: x = (-{b:.6f} + sqrt({b:.6f}² - 4*{a:.6f}*({c:.6f}-y)))/(2*{a:.6f})")
             
             return 0
         else:

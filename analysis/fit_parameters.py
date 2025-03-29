@@ -211,6 +211,69 @@ def fit_correction_parameters(offset_data, use_ambient=False, ambient_ref=20.0, 
                 'use_ambient': False
             }
 
+def create_interpolation_model(offset_data):
+    """
+    Create an interpolation model from temperature offset data.
+    
+    Args:
+        offset_data: List of dicts with offset data
+        
+    Returns:
+        Dict with interpolation data and statistics
+    """
+    import numpy as np
+    from scipy.interpolate import interp1d
+    
+    # Extract target temperatures and liquid offsets
+    target_temps = np.array([d['target_temp'] for d in offset_data])
+    liquid_offsets = np.array([d['liquid_offset'] for d in offset_data])
+    
+    # Sort data by target temperature
+    sorted_indices = np.argsort(target_temps)
+    target_temps = target_temps[sorted_indices]
+    liquid_offsets = liquid_offsets[sorted_indices]
+    
+    # Create interpolation model using scipy
+    # Check if we have enough points for cubic interpolation
+    kind = 'cubic' if len(target_temps) >= 4 else 'linear'
+    
+    # Create interpolation function
+    interp_func = interp1d(target_temps, liquid_offsets, kind=kind, 
+                          bounds_error=False, fill_value='extrapolate')
+    
+    # Calculate metrics to evaluate the model
+    # Test the interpolation on the original data points
+    predicted_offsets = interp_func(target_temps)
+    
+    # Calculate RMSE (root mean squared error)
+    rmse = np.sqrt(np.mean((liquid_offsets - predicted_offsets)**2))
+    
+    # Calculate R² (coefficient of determination)
+    ss_total = np.sum((liquid_offsets - np.mean(liquid_offsets))**2)
+    ss_residual = np.sum((liquid_offsets - predicted_offsets)**2)
+    r_squared = 1 - (ss_residual / ss_total)
+    
+    # Store interpolation data
+    interp_data = {
+        'target_temps': target_temps.tolist(),  # Convert numpy arrays to lists for JSON serialization
+        'liquid_offsets': liquid_offsets.tolist(),
+        'interp_kind': kind,
+        'temp_min': float(np.min(target_temps)),
+        'temp_max': float(np.max(target_temps)),
+        'rmse': float(rmse),
+        'r_squared': float(r_squared)
+    }
+    
+    # Print results
+    print("\nCreated interpolation model:")
+    print(f"  Interpolation type: {kind}")
+    print(f"  Temperature range: {interp_data['temp_min']:.2f}°C to {interp_data['temp_max']:.2f}°C")
+    print(f"  Number of data points: {len(target_temps)}")
+    print(f"  R² = {r_squared:.4f}")
+    print(f"  RMSE = {rmse:.4f}°C")
+    
+    return interp_data
+
 def update_config_from_fitted_params(fitted_params, config_file=None):
     """
     Update configuration file with fitted parameters.
@@ -420,3 +483,131 @@ def plot_parameter_comparison(old_params, new_params, savefig=None):
         plt.savefig(savefig, dpi=300, bbox_inches='tight')
     
     return fig
+
+def visualize_interpolation(offset_data, interp_data, filename, output_dir):
+    """
+    Create visualizations of the interpolation model.
+    
+    Args:
+        offset_data: List of dicts with offset data
+        interp_data: Dict with interpolation data
+        filename: Original data filename
+        output_dir: Directory to save output files
+        
+    Returns:
+        Dict with paths to output files
+    """
+    import os
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from scipy.interpolate import interp1d
+    
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Generate base filename
+    base_name = os.path.splitext(os.path.basename(filename))[0]
+    
+    # Extract data for plotting
+    target_temps = np.array(interp_data['target_temps'])
+    liquid_offsets = np.array(interp_data['liquid_offsets'])
+    kind = interp_data.get('interp_kind', 'linear')
+    
+    # Create figure
+    plt.figure(figsize=(12, 8))
+    
+    # Plot measured data points
+    plt.scatter(target_temps, liquid_offsets, c='b', marker='o', s=70, 
+               label='Measured Data Points', zorder=3)
+    
+    # Create interpolation function
+    interp_func = interp1d(target_temps, liquid_offsets, kind=kind, 
+                          bounds_error=False, fill_value='extrapolate')
+    
+    # Generate smooth curve for visualization
+    x_smooth = np.linspace(min(target_temps) - 2, max(target_temps) + 2, 500)
+    y_smooth = interp_func(x_smooth)
+    
+    # Plot interpolation curve
+    plt.plot(x_smooth, y_smooth, 'r-', linewidth=2, 
+            label=f'{kind.capitalize()} Spline Interpolation', zorder=2)
+    
+    # Plot zero-offset line
+    plt.axhline(y=0, color='k', linestyle='--', alpha=0.5, zorder=1)
+    
+    # Add labels and title
+    plt.xlabel('Target Temperature (°C)', fontsize=12)
+    plt.ylabel('Liquid Temperature Offset (°C)', fontsize=12)
+    plt.title('Temperature Correction: Interpolation Model', fontsize=14)
+    
+    # Add statistics text
+    stats_text = (
+        f"Interpolation type: {kind}\n"
+        f"Data points: {len(target_temps)}\n"
+        f"Temperature range: {interp_data['temp_min']:.1f}°C to {interp_data['temp_max']:.1f}°C\n"
+        f"R² = {interp_data.get('r_squared', 0):.4f}\n"
+        f"RMSE = {interp_data.get('rmse', 0):.4f}°C"
+    )
+    
+    plt.annotate(stats_text, xy=(0.02, 0.02), xycoords='axes fraction',
+                fontsize=10, ha='left', va='bottom',
+                bbox=dict(boxstyle='round', fc='white', alpha=0.8))
+    
+    # Add legend
+    plt.legend(loc='best', fontsize=10)
+    
+    # Add grid
+    plt.grid(True, alpha=0.3, zorder=0)
+    
+    # Set tight layout
+    plt.tight_layout()
+    
+    # Save figure
+    interp_plot_path = os.path.join(output_dir, f"{base_name}_interp_model.png")
+    plt.savefig(interp_plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # Create a second plot showing the corrected temperatures
+    plt.figure(figsize=(12, 8))
+    
+    # Calculate corrected temperatures
+    corrected_temps = target_temps - liquid_offsets
+    
+    # Plot target vs corrected temperatures
+    plt.scatter(target_temps, corrected_temps, c='g', marker='o', s=70,
+               label='Corrected Target Temperatures', zorder=3)
+    
+    # Generate smooth curve
+    corrected_smooth = x_smooth - interp_func(x_smooth)
+    
+    # Plot smooth curve
+    plt.plot(x_smooth, corrected_smooth, 'g-', linewidth=2,
+            label='Interpolated Correction', zorder=2)
+    
+    # Plot 1:1 line
+    plt.plot([min(x_smooth), max(x_smooth)], [min(x_smooth), max(x_smooth)],
+            'k--', alpha=0.5, label='1:1 Line (No Correction)', zorder=1)
+    
+    # Add labels and title
+    plt.xlabel('Desired Liquid Temperature (°C)', fontsize=12)
+    plt.ylabel('Corrected Holder Temperature (°C)', fontsize=12)
+    plt.title('Temperature Correction: Target vs. Corrected Temperatures', fontsize=14)
+    
+    # Add legend
+    plt.legend(loc='best', fontsize=10)
+    
+    # Add grid
+    plt.grid(True, alpha=0.3, zorder=0)
+    
+    # Set tight layout
+    plt.tight_layout()
+    
+    # Save figure
+    corrected_plot_path = os.path.join(output_dir, f"{base_name}_corrected_temps.png")
+    plt.savefig(corrected_plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    return {
+        'interp_model': interp_plot_path,
+        'corrected_temps': corrected_plot_path
+    }

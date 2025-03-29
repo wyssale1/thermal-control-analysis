@@ -41,6 +41,10 @@ class TemperatureControl:
         self.use_ambient_correction = False
         self.ambient_reference = 20.0  # Reference ambient temperature
         self.ambient_coefficient = 0.0  # Coefficient for ambient correction
+        
+        # New interpolation support
+        self.use_interpolation = False  # Whether to use interpolation model instead of polynomial
+        self.interp_data = None  # Interpolation data
     
     def connect_devices(self):
         """Connect to both devices."""
@@ -70,23 +74,40 @@ class TemperatureControl:
             self.arduino.disconnect()
         logging.info("All devices disconnected")
     
-    def calculate_corrected_target(self, desired_liquid_temp, ambient_temp=None):
+    def load_interpolation_model(self, filename=None):
         """
-        Calculate the corrected target temperature for the holder.
-        
-        Uses the temperature correction formula from LabVIEW:
-        x = (-0.5645 + sqrt(0.5645**2 - 4*0.0039*(4.8536-y)))/(2*0.0039)
-        Where y is the desired liquid temperature and x is the corrected target temperature
-        
-        This is based on solving the quadratic equation: ax² + bx + (c-y) = 0
-        Using the quadratic formula: x = (-b ± sqrt(b² - 4a(c-y)))/(2a)
+        Load an interpolation model for temperature correction.
         
         Args:
-            desired_liquid_temp: The desired temperature for the liquid
-            ambient_temp: Optional ambient temperature for additional compensation
+            filename: Path to the interpolation data file
             
         Returns:
-            The corrected target temperature to set for the holder
+            Boolean indicating success
+        """
+        from thermal_control.utils.config_reader import load_interpolation_data
+        
+        interp_data = load_interpolation_data(filename)
+        
+        if interp_data and 'target_temps' in interp_data and 'liquid_offsets' in interp_data:
+            self.interp_data = interp_data
+            self.use_interpolation = True
+            logging.info(f"Loaded interpolation model with {len(interp_data['target_temps'])} data points")
+            logging.info(f"Temperature range: {interp_data['temp_min']:.2f}°C to {interp_data['temp_max']:.2f}°C")
+            return True
+        else:
+            logging.warning("Failed to load interpolation model, will use polynomial correction")
+            return False
+    
+    def calculate_corrected_target_poly(self, desired_liquid_temp, ambient_temp=None):
+        """
+        Calculate the corrected target temperature using polynomial formula.
+        
+        Args:
+            desired_liquid_temp: Desired liquid temperature
+            ambient_temp: Optional ambient temperature for correction
+            
+        Returns:
+            Corrected target temperature for the holder
         """
         # Apply ambient temperature correction if enabled and ambient_temp is provided
         ambient_correction = 0.0
@@ -125,9 +146,103 @@ class TemperatureControl:
             logging.warning(f"Using direct temperature setting without correction: {corrected_target:.2f}°C")
         
         logging.info(f"Desired liquid temp: {desired_liquid_temp:.2f}°C, "
-                     f"Setting holder to: {corrected_target:.2f}°C")
+                     f"Setting holder to: {corrected_target:.2f}°C (polynomial correction)")
         
         return corrected_target
+    
+    def calculate_corrected_target_interp(self, desired_liquid_temp, ambient_temp=None):
+        """
+        Calculate the corrected target temperature using interpolation.
+        
+        Args:
+            desired_liquid_temp: Desired liquid temperature
+            ambient_temp: Optional ambient temperature for correction
+            
+        Returns:
+            Corrected target temperature for the holder
+        """
+        from scipy.interpolate import interp1d
+        import numpy as np
+        
+        # Apply ambient temperature correction if enabled and ambient_temp is provided
+        ambient_correction = 0.0
+        if self.use_ambient_correction and ambient_temp is not None:
+            ambient_correction = self.ambient_coefficient * (ambient_temp - self.ambient_reference)
+            logging.info(f"Applied ambient correction: {ambient_correction:.2f}°C (ambient: {ambient_temp:.2f}°C)")
+        
+        # Adjusted target temperature with ambient correction
+        adjusted_desired_temp = desired_liquid_temp - ambient_correction
+        
+        try:
+            if self.interp_data is None or 'target_temps' not in self.interp_data or 'liquid_offsets' not in self.interp_data:
+                # Fall back to polynomial correction if interpolation data not available
+                logging.warning("Interpolation data not available, falling back to polynomial correction")
+                return self.calculate_corrected_target_poly(desired_liquid_temp, ambient_temp)
+            
+            # Get interpolation data
+            target_temps = np.array(self.interp_data['target_temps'])
+            liquid_offsets = np.array(self.interp_data['liquid_offsets'])
+            kind = self.interp_data.get('interp_kind', 'linear')
+            
+            # Check if we're within the interpolation range
+            temp_min = self.interp_data.get('temp_min', float(np.min(target_temps)))
+            temp_max = self.interp_data.get('temp_max', float(np.max(target_temps)))
+            
+            # Warn if extrapolating
+            if adjusted_desired_temp < temp_min:
+                logging.warning(f"Desired temperature {adjusted_desired_temp:.2f}°C is below the "
+                               f"interpolation range ({temp_min:.2f}°C). Using extrapolation.")
+            elif adjusted_desired_temp > temp_max:
+                logging.warning(f"Desired temperature {adjusted_desired_temp:.2f}°C is above the "
+                               f"interpolation range ({temp_max:.2f}°C). Using extrapolation.")
+            
+            # Create interpolation function
+            interp_func = interp1d(target_temps, liquid_offsets, kind=kind, 
+                                   bounds_error=False, fill_value='extrapolate')
+            
+            # Get interpolated offset
+            interpolated_offset = float(interp_func(adjusted_desired_temp))
+            
+            # Calculate corrected target temperature
+            # If the offset is positive, the liquid is warmer than target, so we need to set holder cooler
+            # If the offset is negative, the liquid is cooler than target, so we need to set holder warmer
+            corrected_target = adjusted_desired_temp - interpolated_offset
+            
+            logging.info(f"Desired liquid temp: {desired_liquid_temp:.2f}°C, "
+                        f"Interpolated offset: {interpolated_offset:.2f}°C, "
+                        f"Setting holder to: {corrected_target:.2f}°C (interpolation correction)")
+            
+            return corrected_target
+        
+        except Exception as e:
+            logging.error(f"Error calculating corrected temperature using interpolation: {e}")
+            # Fallback to polynomial correction
+            logging.warning("Falling back to polynomial correction due to error")
+            return self.calculate_corrected_target_poly(desired_liquid_temp, ambient_temp)
+    
+    def calculate_corrected_target(self, desired_liquid_temp, ambient_temp=None):
+        """
+        Calculate the corrected target temperature for the holder.
+        
+        Uses the temperature correction formula from LabVIEW:
+        x = (-0.5645 + sqrt(0.5645**2 - 4*0.0039*(4.8536-y)))/(2*0.0039)
+        Where y is the desired liquid temperature and x is the corrected target temperature
+        
+        This is based on solving the quadratic equation: ax² + bx + (c-y) = 0
+        Using the quadratic formula: x = (-b ± sqrt(b² - 4a(c-y)))/(2a)
+        
+        Args:
+            desired_liquid_temp: The desired temperature for the liquid
+            ambient_temp: Optional ambient temperature for additional compensation
+            
+        Returns:
+            The corrected target temperature to set for the holder
+        """
+        # Choose the calculation method based on configuration
+        if self.use_interpolation and self.interp_data is not None:
+            return self.calculate_corrected_target_interp(desired_liquid_temp, ambient_temp)
+        else:
+            return self.calculate_corrected_target_poly(desired_liquid_temp, ambient_temp)
     
     def read_all_sensors(self):
         """Read data from all sensors."""

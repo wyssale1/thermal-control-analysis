@@ -168,3 +168,69 @@ def update_correction_parameters(params, config_file=None):
     except Exception as e:
         logging.error(f"Error updating correction parameters: {e}")
         return False
+
+def save_interpolation_data(interp_data, filename=None):
+    """
+    Save interpolation data to a JSON file.
+    
+    Args:
+        interp_data: Dict with interpolation data
+        filename: Output file path (optional)
+    
+    Returns:
+        Boolean indicating success
+    """
+    import os
+    import json
+    import logging
+    
+    # Default filename if not provided
+    if filename is None:
+        filename = os.path.join(os.path.dirname(DEFAULT_CONFIG_FILE), 'temp_correction_interp.json')
+    
+    # Ensure directory exists
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    
+    try:
+        with open(filename, 'w') as f:
+            json.dump(interp_data, f, indent=2)
+        
+        logging.info(f"Interpolation data saved to {filename}")
+        return True
+    
+    except Exception as e:
+        logging.error(f"Error saving interpolation data: {e}")
+        return False
+
+def load_interpolation_data(filename=None):
+    """
+    Load interpolation data from a JSON file.
+    
+    Args:
+        filename: Input file path (optional)
+    
+    Returns:
+        Dict with interpolation data or None if file not found or error
+    """
+    import os
+    import json
+    import logging
+    
+    # Default filename if not provided
+    if filename is None:
+        filename = os.path.join(os.path.dirname(DEFAULT_CONFIG_FILE), 'temp_correction_interp.json')
+    
+    try:
+        if not os.path.exists(filename):
+            logging.warning(f"Interpolation data file {filename} not found")
+            return None
+        
+        with open(filename, 'r') as f:
+            interp_data = json.load(f)
+        
+        logging.info(f"Interpolation data loaded from {filename}")
+        return interp_data
+    
+    except Exception as e:
+        logging.error(f"Error loading interpolation data: {e}")
+        return None

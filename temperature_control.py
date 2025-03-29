@@ -79,6 +79,10 @@ def main():
     
     # Create temperature control system
     temp_control = TemperatureControl(tec_controller, arduino_interface, data_manager)
+
+    # Load interpolation model if specified
+    temp_control.load_interpolation_model()
+
     
     # Load correction parameters from config file
     config = read_config()
